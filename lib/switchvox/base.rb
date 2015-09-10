@@ -36,6 +36,8 @@ class Base
   attr :session, true
   attr :debug, true
   attr :auth_header, true
+  attr :retries
+  attr :max_retries
 
   def initialize(host, user, pass, options={})
     {:debug => false}.merge! options
@@ -47,6 +49,9 @@ class Base
     @url  = URI.parse("https://" + @host + URL)
     @ssl  = false
     @ssl  = true if @url.scheme == "https"
+    
+    @retries = 0
+    @max_retries = 2
 
     @connection  = false
     @auth_header = false
@@ -58,6 +63,10 @@ class Base
   def request(method, parameters={})
     body = wrap_json(method, parameters)
     header   = {'Content-Type' => "text/json"}
+    
+    # Clear retry cound here so it's fresh for each new request we make
+    @retries = 0
+    
     # Send the request
     send_request(body, header)
 
@@ -66,6 +75,10 @@ class Base
   def upload(method, parameters={})
     body = multipart_upload(method, parameters)
     header = {'Content-Type' => 'multipart/form-data; boundary=' + BOUNDARY}
+    
+    # Clear retry cound here so it's fresh for each new request we make
+    @retries = 0
+    
     send_request(body, header)
   end
 
@@ -100,8 +113,13 @@ class Base
           raise EmptyResponse unless response.body
           return json_parse(response.body)
         when Net::HTTPUnauthorized
+          # If we're getting unauthorized errors, limit retries to avoid getting banned!
+          if (@retries > @max_retries)
+            raise LoginError, "Invalid Username or Password"
+          end
           login!
-          request(method, parameters)
+          @retries += 1
+          send_request(body, header)
         when Net::HTTPForbidden
           raise LoginError, "Invalid Username or Password"
         else raise UnhandledResponse, "Can't handle response #{response}"
